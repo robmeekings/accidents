@@ -1,0 +1,1002 @@
+---
+title: "Data Science: Capstone module  \nChoose Your Own!  \n  \nRoad Accident Detection and Response"
+author: "Rob Meekings"
+date: "02/01/2021"
+header-includes:
+   - \usepackage{fontspec}
+mainfont: Calibri
+output:
+  pdf_document: 
+    df_print: kable
+    latex_engine: xelatex
+    toc: yes
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+# Use knitr to produce nicer tables in output 
+knitr::opts_chunk$set(echo = TRUE, dev="cairo_pdf")
+options(digits = 3)
+
+```
+
+```{r libraries, echo=FALSE, message=FALSE, include=FALSE, warning=FALSE}
+# There are a number of libraries that we rely on in the development of the models
+# we have centralized the instalation and loading of these libraries here.
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(kableExtra)) install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+# https://cran.r-project.org/web/packages/suncalc/suncalc.pdf
+if(!require(suncalc)) install.packages("suncalc", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(MASS)) install.packages("MASS", repos = "http://cran.us.r-project.org")
+if(!require(pscl)) install.packages("pscl", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+
+# Load libraries
+library(tidyverse)
+library(caret)
+library(data.table)
+library(lubridate)
+library(kableExtra)
+library(suncalc)
+library(dplyr)
+library(MASS)
+library(pscl)
+library(randomForest)
+
+```
+
+\newpage
+***
+## 1 Executive Summary
+
+1.1 This report summarizes the findings of exploratory data analysis performed on traffic accident data in the UK. The data is published by the UK Department for Transport and is publicly available via the data.gov.uk website. The exploration of the data leads to the development of statistical models to predict the number of casualties, given that an accident has occurred.  
+
+1.2 The final model, an ensemble based on a random forest, presented in this paper scores a RMSE of 0.704. 
+
+1.3 The exploratory analysis raises a number of questions for further study and opportunities to further extend and develop the model. These are presented at the end of the paper along with some research questions that could go a long way to improving our understanding in this field, potentially improving road safety by reducing the number of accidents.
+
+\newpage
+***
+## 2 Introduction
+
+2.1 This report summarizes the development and results of the Road Accident Detection and Response (RADAR) system, developed in R by Rob Meekings for the *"Choose Your Own!"* assignment of the Data Science: Capstone module ([HarvardX PH125.9x](https://www.edx.org/course/data-science-capstone)). 
+
+2.2 The goal of this project is to train a machine learning algorithm on a subset of the UK road accident data for the years 2016-2019 (the training set) to correctly predict number and severity of accidents in a subset of this same accident data that is not used in making predictions (known as the test or validation set).
+
+2.3 The structure of this report reflects the sequence of steps taken in developing this model. Section 3 describes how the source data was imported into the R environment, cleaned and prepared for analysis and modelling. In section 4 we then discuss the exploratory data analysis that was performed to get a feel for the data and how to model it. We then look at the steps required to develop a model in section 5, summarize our results in section 6, and then consider any further work or next steps that would be likely to improve the model in section 7.
+
+2.4 This report is intended to be read by someone familiar with the module and course content, as such the reader should be familiar with the R programming language and data science topics. 
+
+2.5 This report complies with the ([edX Honor Code](https://www.edx.org/edx-terms-service#honor-code)).
+
+\newpage
+***
+## 3 Source Data
+
+3.1 The source data for this project comes from the Department for Transport in the UK and relates to road accidents in the UK in the years 2016-2019. The data is assumed to be accurate, complete and reliable. This data contains a row for every recorded accident, associated datasets containing details of vehicles and any casualties are also available. 
+
+### Download and cleaning of the data
+
+3.2 The data is downloaded from the Department for Transport's space on the data.gov.uk platform using the code below. The data can be accessed in a browser through the web page at https://data.gov.uk/dataset/cb7ae6f0-4be6-4935-9277-47e5ce24a11f/road-safety-data.
+
+3.3 A helper function is used to automate some of the mechanical and repetive code needed to download a zip file, extract a csv from it and read this into R as a data frame.
+ 
+
+``` {r get_src_data, echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+
+##########################################################
+# Create training set and validation hold-out test set
+##########################################################
+
+# Whilst this looks very organised and uniform some of the files are hosted by amazon, 
+# some by the DfT, some are zips and some are csvs, some of the csvs have short names, 
+# some have long names, to overcome this we have prepared this helper function
+get_src_data <- function(url, file_name, is_zip) {
+  dl <- tempfile()        # create a tempfile to receive the downloaded file
+  download.file(url, dl, mode="wb")  # download the file at the given url
+  if (is_zip == TRUE) {   # unzip "file_name" and process as a csv with a header
+    output <- fread(text = gsub("::", "\t", readLines(unzip(dl, file_name))), header=TRUE)
+  }
+  else {                  # process the file as a csv with a header
+    output <- fread(text = gsub("::", "\t", readLines(dl)), header=TRUE)
+  }
+  rm(dl)                  # clear/release the tempfile
+  return(output)          # return the dataframe derived from the source file
+}
+
+```
+
+3.4 Using this function the code needed to download and unzip the accident and vehicle data we are interested is greatly simplified, despite the variation in files from year to year: the 2019 files are csv's in a zip file, the 2018 files are csv's that have not been zipped, the 2016 and 2017 files are zipped and the vehicle information files have standardized short names, but the accident filenames differ.
+ 
+
+``` {r download, echo=FALSE, message=FALSE, results='hide', warning=FALSE}
+
+# Download accident (acc) and associated vehicle (veh) records for each year, use the 
+# custom function get_src_data to process the download, unzipping and reading of the 
+# file
+
+acc19 <- get_src_data(url = "http://data.dft.gov.uk/road-accidents-safety-data/DfTRoadSafety_Accidents_2019.zip",
+                      file_name = "Road Safety Data - Accidents 2019.csv", is_zip = TRUE)
+
+veh19 <- get_src_data(url = "http://data.dft.gov.uk/road-accidents-safety-data/DfTRoadSafety_Vehicles_2019.zip",
+                      file_name = "Road Safety Data- Vehicles 2019.csv", is_zip = TRUE)
+
+# 2018: csv files with long file names
+acc18 <- get_src_data(url = "http://data.dft.gov.uk/road-accidents-safety-data/dftRoadSafetyData_Accidents_2018.csv", 
+                      is_zip = FALSE)
+
+veh18 <- get_src_data(url = "http://data.dft.gov.uk/road-accidents-safety-data/dftRoadSafetyData_Vehicles_2018.csv",
+                      is_zip = FALSE)
+
+# 2017: zip files with short file names
+acc17 <- get_src_data(url = "http://data.dft.gov.uk.s3.amazonaws.com/road-accidents-safety-data/dftRoadSafetyData_Accidents_2017.zip",
+                      file_name = "Acc.csv", is_zip = TRUE)
+
+veh17 <- get_src_data(url = "http://data.dft.gov.uk.s3.amazonaws.com/road-accidents-safety-data/dftRoadSafetyData_Vehicles_2017.zip",
+                      file_name = "Veh.csv", is_zip = TRUE)
+
+# 2016: zip files with short file names, except for the accident file
+acc16 <- get_src_data(url = "http://data.dft.gov.uk/road-accidents-safety-data/dftRoadSafety_Accidents_2016.zip",
+                      file_name = "dftRoadSafety_Accidents_2016.csv", is_zip = TRUE)
+
+veh16 <- get_src_data(url = "http://data.dft.gov.uk/road-accidents-safety-data/dftRoadSafetyData_Vehicles_2016.zip",
+                      file_name = "Veh.csv", is_zip = TRUE)
+
+```
+
+3.5 The next step would be to combine these data sets to create files for all accidents and vehicles. If we try to do this immediately we get errors reported: 
+
+> Error: not compatible: 
+
+> - Incompatible types for column `Longitude`: character vs double
+
+> - Incompatible types for column `Latitude`: character vs double
+
+> - Incompatible types for column `Speed_limit`: integer vs character
+
+3.6 We can address these issues by coaxing the longitude, latitude and speed limit data from character to numeric. Having done this we can concatenate the annual data to create two composite files.
+
+```{r clean_vars, echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+# Need to clean up speed limits in acc16
+acc16 %>% mutate(nSpeed = as.numeric(Speed_limit)) %>%
+  filter(is.na(nSpeed)) %>% head()
+
+# Check that "NULL" is the only problem
+acc16 %>% filter(Speed_limit != "NULL") %>% 
+  mutate(nSpeed = as.numeric(Speed_limit)) %>%
+  filter(is.na(nSpeed)) %>% head()
+
+# Coerce to numeric, accept na for "NULL"
+acc16$Speed_limit <- as.numeric(acc16$Speed_limit)
+#Warning messages: NAs introduced by coercion 
+# This is okay, we understand why
+
+# Need to clean up Latitude and Longitude in acc17
+acc17 %>% mutate(nLong = as.numeric(Longitude)) %>%
+  filter(is.na(nLong)) %>% head()
+# Check if empty text and "NULL" is the only problem
+acc17 %>% filter(!Longitude %in% c("", "NULL")) %>% 
+  mutate(nLong = as.numeric(Longitude)) %>%
+  filter(is.na(nLong)) %>% head()
+
+# Coerce to numeric
+acc17$Latitude <- as.numeric(acc17$Latitude)
+acc17$Longitude <- as.numeric(acc17$Longitude)
+#Warning messages: NAs introduced by coercion 
+# This is okay, we understand why
+
+# Concatenate datasets, the others are more straightforward
+accidents <- union(union(acc19, acc18), union(acc17, acc16))
+vehicles <- union(union(veh19, veh18), union(veh17, veh16))
+```
+
+3.7 We should be able to get some predictive power from the vehicle data, however for simplicity we will limit the data we consider to the first vehicle's data (using Vehicle_Reference = 1 to indicate this) and restrict ourselves to those data items that intuitively seem most likely to relate to accidents: vehicle age and type, the driver's gender, age and the IMD decile, a wealth or deprivation measure. We are assuming that there is a logic to the way the data is collected and organised such that there may be more significance to the vehicle with reference 1. We then join this data onto the accident data using the Accident_Index key field.
+ 
+
+```{r veh_data, echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+
+# Now take the first vehicle from each accident
+acc_veh_types <- vehicles %>% 
+  filter(Vehicle_Reference == 1) 
+
+# We can drop fields that are unlikely to tell us much about accidents, we keep
+acc_veh_types <- acc_veh_types[, c(1,3,15,16,17,20,21)]
+
+# Copy these fields across to 
+accidents <- left_join(accidents, acc_veh_types, by="Accident_Index")
+
+# Garbage collection, free up some resources.
+rm(acc16, acc17, acc18, acc19)
+rm(veh16, veh17, veh18, veh19)
+rm(acc_veh_types, vehicles)
+
+```
+
+### Feature development, date-based information
+
+3.8 Now we have cleaned up the accident data and augmented it with information about the first vehicle and its driver we can derive some further information that may be relevant based upon what we know about where and when the accident occurred. We use functions from the library *lubridate* to convert the date and time to a *POSIXct* which we can then easily manipulate in R.
+ 
+
+``` {r acc_time, echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+
+# Convert date and time variables to a composite date time
+accidents$accident_time <- dmy_hm(paste(accidents$Date, " ", accidents$Time))
+
+```
+
+3.9 We should be able to improve on the light conditions data, which is likely to be subjective, by adding some objective data based on the sun's position given the loacation, date and time. We first of all find the times for dawn and dusk for the date and location given, and then find where the time of the accident falls.
+ 
+
+```{r solar_act, echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+
+# We want to augment the data with time of day, we'll add this to the composite data
+# this might be expected to have a number of roles to play in accident frequency, 
+# the reduced visibility from low sun, or the greyness of twilight, increased volumes,
+# traffic type with single occupant commuter cars; we can separate this from a rush hour
+# effect by adding a period that is fixed in time, say 7:30-9am and 5-6:30pm.  
+#
+# Take the dates and times and location we'll use these to find sun times
+
+geosp <- data.frame(datetime = accidents$accident_time, 
+  lat = accidents$Latitude, 
+  lon <- accidents$Longitude)
+
+# Double check the column names are what we need for the inputs of 
+# suncalc::getSunlightTimes()
+
+colnames(geosp) <- c("datetime", "lat", "lon")
+
+# Extract the date 
+
+geosp$date <- date(geosp$datetime)
+
+# Now calculate sun times 
+# Note: There are other options we could pick for defining the phases of the 
+# day, we could analyse the impact of the choice we have made however it 
+# is unlikely to be material
+
+suntimes <- getSunlightTimes(data=geosp,
+                 keep = c("sunset", "sunriseEnd",
+                          "nightEnd", "night", "nadir"))
+
+#Find time of day using the rules:
+# if no night then 
+#   if we are before sunrise end, or after sunset, 
+#     check which side of nadir we are and make dawn or dusk
+#   otherwise day time
+# otherwise if between night and nightEnd then night
+# if between night end and sunrise end then dawn, 
+# if between sunset and night then dusk, 
+# otherwise day time 
+# Note simplification as we are only looking at times on given 
+# day, rather than previous day - assumes sun times change slowly
+# so sunset today is a good proxy for sunset yesterday, etc.
+
+geosp$time_of_day <- factor(
+  ifelse(is.na(suntimes$night), 
+         ifelse(geosp$datetime < suntimes$sunriseEnd | geosp$datetime > suntimes$sunset, 
+                ifelse(geosp$datetime < suntimes$nadir, "Dawn", "Dusk"), "Day"), 
+         ifelse(geosp$datetime < suntimes$nightEnd | geosp$datetime > suntimes$night, "Night", 
+                ifelse(geosp$datetime < suntimes$sunriseEnd, "Dawn", 
+                       ifelse(geosp$datetime > suntimes$sunset,"Dusk", "Day")))))
+
+# We can then copy this derived data items back to the accidents dataset
+accidents$time_of_day <- geosp$time_of_day
+
+#Garbage collection
+rm(suntimes, geosp)
+
+#Add rush hour flag
+accidents$rush_hour <- ifelse(is.na(accidents$accident_time), "N", 
+                              ifelse(accidents$Day_of_Week %in% c(1, 7), "N", 
+                                     ifelse(hour(accidents$accident_time) == 8 | 
+                                       (hour(accidents$accident_time) == 7 & 
+                                          minute(accidents$accident_time) >= 30), "AM",
+                                       ifelse(hour(accidents$accident_time) == 17 |  
+                                        (hour(accidents$accident_time) == 18 &
+                                           minute(accidents$accident_time) <= 30), "PM","N"))))
+
+accidents$year <- year(accidents$accident_time)
+accidents$month <- month(accidents$accident_time)
+
+```
+
+### Creating factors
+
+3.10 We can convert numeric keys to factors to flag to R that these are discrete values and their meaning may be different to their numeric value: the information conveyed by a key value of 3 may not have any relationship to the information associated with a key value of 2, despite the numerical relationship. For severity a higher key value indicates a more severe accident, 1 (fatal) is worse that 2 (serious), which is in turn worse than 3 (slight).
+ 
+
+``` {r factors, echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+
+# Convert numeric variables to factors
+accidents$Accident_Severity <- factor(accidents$Accident_Severity, ordered = T)
+accidents$Junction_Detail <- factor(accidents$Junction_Detail)
+accidents$Weather_Conditions <- factor(accidents$Weather_Conditions)
+accidents$Light_Conditions <- factor(accidents$Light_Conditions)
+accidents$Road_Surface_Conditions <- factor(accidents$Road_Surface_Conditions ) 
+accidents$Carriageway_Hazards <- factor(accidents$Carriageway_Hazards )
+accidents$Urban_or_Rural_Area <- factor(accidents$Urban_or_Rural_Area)
+accidents$rush_hour <- factor(ifelse(is.na(accidents$rush_hour), "N", accidents$rush_hour))
+accidents$Speed_limit <- factor(accidents$Speed_limit)
+accidents$month <- factor(accidents$month)
+accidents$year <- factor(accidents$year)
+accidents$Day_of_Week <- factor(accidents$Day_of_Week)
+accidents$Vehicle_Type <- factor(accidents$Vehicle_Type)
+accidents$Sex_of_Driver <- factor(accidents$Sex_of_Driver)
+accidents$Age_Band_of_Driver <- factor(accidents$Age_Band_of_Driver)
+accidents$Driver_IMD_Decile <- factor(accidents$Driver_IMD_Decile)
+
+# Add a field to count the number of vehicles after the first
+accidents$Other_Vehicles <- accidents$Number_of_Vehicles - 1
+
+# Regularize field names
+accidents <- accidents %>% 
+  rename(
+    Local_Authority_District = `Local_Authority_(District)`,
+    Local_Authority_Highway = `Local_Authority_(Highway)`, 
+    First_Road_Class = `1st_Road_Class`,
+    First_Road_Number = `1st_Road_Number`,
+    Second_Road_Class = `2nd_Road_Class`,
+    Second_Road_Number = `2nd_Road_Number`,
+    Pedestrian_Crossing_Control = `Pedestrian_Crossing-Human_Control`,
+    Pedestrian_Crossing_Facilities = `Pedestrian_Crossing-Physical_Facilities`,
+    Police_Attended_Scene = Did_Police_Officer_Attend_Scene_of_Accident
+    )
+
+```
+
+### Training and Hold-out datasets
+
+3.11 We split the accident data into training and hold-out datasets, holding about 10% of the data back from our modelling and analysis to validate the model. The RMSE reported will be based on predictions made on the hold-out data based on a model trained on the training set.
+ 
+
+``` {r partition, echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+
+# Set seed to make partition repeatably random
+set.seed(1, sample.kind="Rounding")
+# Create sampled partition index
+sampled_index <- createDataPartition(y = accidents$Number_of_Casualties, 
+                                     times = 1, p = 0.1, list = FALSE)
+# Create the training set as those obs not in our sample
+sampled_training <- accidents[-sampled_index,]
+# Create the validation set as those obs in our sample
+sampled_validation <- accidents[sampled_index,]
+# Check proportion of data in training set
+train_propn <- nrow(sampled_training) / nrow(accidents)
+
+# Datasets have been stored to enable easier development, does not need to be run each time
+
+# saveRDS(sampled_training, "training.rds")
+# saveRDS(sampled_validation, "validation.rds")
+
+# Copies of these datasets can be downloaded from github using this code
+
+#dl <- tempfile()        # create a tempfile to receive the downloaded file
+#download.file("https://github.com/robmeekings/accidents/raw/main/training.rds", 
+#              dl, mode="wb")  # download the file at the given url
+#sampled_training <- readRDS(dl)
+
+#dl <- tempfile()        # create a tempfile to receive the downloaded file
+#download.file("https://github.com/robmeekings/accidents/raw/main/validation.rds", 
+#              dl, mode="wb")  # download the file at the given url
+#sampled_validation <- readRDS(dl)
+
+# Garbage collection
+rm(accidents)
+
+```
+
+3.12 This segmentation gives us 
+`r scales::percent(train_propn) `
+of the data to train the models on and the remainder to validate the models.
+
+\newpage
+***
+## 4 Exploratory Data Analysis
+
+4.1 The table below lists the data from the first few rows of the the training dataset. The column names are descriptive of their contents and contain foreign keys to reference tables.
+
+``` {r ds_head, echo=TRUE, message=FALSE, warning=FALSE}
+
+# Get a sample of the data, pick the first record
+t(head(sampled_training, n=1))
+
+```
+
+4.2 The structure of the dataset is:
+
+``` {r ds_str, echo=TRUE, message=FALSE, warning=FALSE}
+
+# List the variables that make up the input data
+str(sampled_training, strict.width="wrap", vec.len=0)
+
+```
+
+### Distribution of accidents
+
+4.3 We can now visualize where these accidents happen using the latitude and longitude, splitting the data by year and severity.
+
+``` {r map, echo=TRUE, message=FALSE, warning=FALSE}
+
+# Use ggplot to plot the location of accidents using their longitude and latitude by 
+# year and severity
+sampled_training %>% mutate(severity = paste0(Accident_Severity, "")) %>% 
+    filter(!is.na(Longitude) & !is.na(year)) %>%
+    group_by(Longitude, Latitude, year, severity) %>%
+    ggplot(aes(x = Longitude, y = Latitude, group=severity, colour=severity)) +
+      geom_point(alpha=0.1, shape=".") + 
+      coord_fixed() + 
+      facet_grid(year~severity) +
+      labs(title="Map of accidents by year and severity")
+
+```
+
+4.4 We notice that the relative weight of these plots stays fairly steady over time and between severity levels, especially for severity levels 2 and 3. The intensely shaded areas correspond to  major population centres - London in the south east, Bristol, Cardiff and Swansea in the south west, then Birmingham in the middle of England, Manchester and Liverpool in the north west of England, and further north, Edinburgh and Glasgow in Scotland. The density of accidents is sufficient that the familiar coastal outline of England is quite well defined, whilst the coasts of Scotland and Wales appear much more sparse.
+
+4.5 The number of casualties is our target in this modelling, so it will help us to look at this variable. The overwhelming majority (
+`r scales::percent(mean(sampled_training$Number_of_Casualties == 1))`
+) of accidents involve only one casualty. This lack of variability in our response variable may make our modelling harder. 
+
+``` {r num_cas, echo=TRUE, message=FALSE, warning=FALSE}
+
+# Sumamrize the distribution of numbers of casualties
+summary(sampled_training$Number_of_Casualties)
+
+# get the mean and std dev of the number of casualties
+stats <- bind_rows(tibble(Statistic ="Mean",  
+                                     Value = mean(sampled_training$Number_of_Casualties)),
+                          tibble(Statistic ="Std deviation",  
+                                     Value = sd(sampled_training$Number_of_Casualties)))
+
+stats
+```
+
+4.6 If we use a logarithmic y axis we can see how the number of casualties is distributed:
+
+``` {r num_cas_hist, echo=TRUE, message=FALSE, warning=FALSE}
+
+# Histogram of number of casualties, with log y-axis 
+sampled_training %>% 
+  ggplot(aes(Number_of_Casualties)) +
+  geom_histogram(bins = 30, color = "black") +
+  scale_y_log10() +
+  labs(title="Histogram of number of casualties", y="Log of count")
+
+```
+
+4.7 We can look at how casualties vary over time, if we plot subsequent years over the same range of months we find a clear pattern in greater casualties in the summer months. 
+
+``` {r num_cas_seas, echo=TRUE, message=FALSE, warning=FALSE}
+
+sampled_training %>%
+  ggplot(aes(x=month, y=Number_of_Casualties, group=year, colour=year)) +
+    geom_smooth() +
+    labs(title="Seasonality of number of casualties", y="Casualties (avg)")
+
+```
+
+Notice that the average number of casualties per accident, appears to be decreasing year-on-year, if the total number of accidents is also decreasing this should be a good sign, although the effect is very small, 
+`r scales::percent(0.03/1.33)` 
+over the period. Notice too, that the monthly fluctations due to seasonality are also very small, of the order of 
+`r scales::percent(0.03/1.32)` 
+, too.
+
+4.8 The distribution through the week appears fairly stable over time, with Sundays (1) being the worst day for the number of casualties, followed by Saturday (7), and with lower levels through the rest of the week, with mid-week appearing to have the least casualties per accident. This suggests that there may be variations in road-use between weekdays and the weekend: single occupant commuter cars may bring down the number of casualties, if not the number of accidents, mid-week. 
+
+``` {r num_cas_week, echo=TRUE, message=FALSE, warning=FALSE}
+
+sampled_training %>% filter(!is.na(Day_of_Week) & !is.na(year)) %>% 
+  group_by(Day_of_Week, year) %>%
+  summarize(cbar = mean(Number_of_Casualties)) %>%
+  ungroup() %>%
+  ggplot(aes(x=Day_of_Week, y=cbar, group=year, colour=year)) +
+  geom_line() +
+  labs(title="Number of casualties by day of the week", y="Casualties")
+
+```
+
+4.9 Having seen an apparent relationship between the number of casualties and the day of the week, does rush hour help to explain the number of casualties. In 3.9, above, we chose defined rush-hour as the periods 7:30-9am and 5-6:30pm. These should be the periods when there are the most vehicles on the roads. 
+
+``` {r num_cas_rush, echo=TRUE, message=FALSE, warning=FALSE}
+
+sampled_training %>% filter(!is.na(rush_hour) & !is.na(year) & !Day_of_Week %in% c(1,7)) %>% 
+  group_by(rush_hour, year) %>%
+  summarize(cbar = mean(Number_of_Casualties)) %>%
+  ungroup() %>%
+  ggplot(aes(x=rush_hour, y=cbar, group=year, colour=year)) +
+  geom_line() +
+  labs(title="Number of casualties by time of day", y="Casualties")
+
+
+```
+
+4.10 We see that rush hour driving has lower average casualty rates than at other times of the day. This suggests that there is a single occupancy vehicle effect, car pooling is not particularly widespread in the UK. The trend for the evening rush hour to be more dangerous than the morning, along with the rising trend in numbers of casualties per accident through the course of the week, might suggest that driver fatigue could play a role in the number of casualties.
+
+\newpage
+***
+## 5 Model development
+
+### Model assessment
+
+5.1 We will assess the models we develop by looking at the *square root of the mean of the squared errors* (RMSE), a better model will have a lower RMSE. The code to define a RMSE function, below, is adapted from the course lecture notes, the rm.na parameter in the mean function call omits missing values from the calculation.
+
+``` {r rmse, include=TRUE, echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+
+# define a function to calculate rmse between observed and predicted data
+# the function should ignore missing values
+RMSE <- function(true_ratings, predicted_ratings){
+    sqrt(mean((true_ratings - predicted_ratings)^2, rm.na=TRUE))
+}
+
+```
+
+### The simplest model
+
+5.2 The simplest model assumes that response values are equal to a constant and a normal noise term. This is a stretch with a left-censored count values, where we don't have negative numbers of casualties, but gives us a base line to compare later models to.
+
+``` {r mean_model, echo=TRUE, message=FALSE, results='hide', warning=FALSE}
+
+# calcualte the mean number of casualties
+mean_casualties <- mean(sampled_training$Number_of_Casualties)
+
+# calculate an RMSE score for using the mean as a predictor
+rmse_mean <- RMSE(sampled_validation$Number_of_Casualties, mean_casualties)
+
+# store the results to a tibble, we will add rows to this as we go
+rmse_results <- tibble(method = "Just the mean", RMSE = rmse_mean)
+
+```
+
+5.3 We find the mean is 
+`r mean_casualties`
+and when we apply this to the data as our predicted value and calculate the RMSE we get an RMSE of
+`r rmse_mean`
+.
+
+### Linear model for variable selection
+
+5.4 We will start by looking at the results of fitting a linear multivariate model to the data to look for correlations, taken with out exploratory analysis, above, this should point to some approaches to modelling and help highlight explanatory variables.
+
+```{r linear_model, echo=TRUE, message=FALSE, warning=FALSE}
+
+# fit a linear model using the lm() function to predict the number of casualties
+model.linear <- lm(Number_of_Casualties ~
+            Police_Force +
+            Other_Vehicles + 
+            Speed_limit + 
+            First_Road_Class +
+            Second_Road_Class +
+            Weather_Conditions + 
+            Light_Conditions + 
+            Road_Surface_Conditions +
+            Carriageway_Hazards + 
+            Urban_or_Rural_Area + 
+            time_of_day + 
+            Day_of_Week +
+            rush_hour +
+            Age_Band_of_Driver + 
+            Sex_of_Driver +
+            Vehicle_Type + 
+            Age_of_Vehicle +
+            Driver_IMD_Decile +
+            year +
+            month,
+          data=sampled_training)
+
+# Apply the model to the validation data to test it
+pred.linear <- data.frame(casualties = 
+                            predict.lm(model.linear, newdata=sampled_validation))
+
+# Flag any records without a prediction and exclude from RMSE
+miss_idx <- is.na(pred.linear$casualties)
+
+# Calculate the RMSE for the model
+rmse_linear <- RMSE(sampled_validation[!miss_idx,]$Number_of_Casualties, pred.linear[!miss_idx,])
+
+# Store the RMSE value in our results tibble
+rmse_results <- bind_rows(rmse_results,
+                          tibble(method="Linear model",  
+                                     RMSE = rmse_linear))
+
+# Output the coefficients of the linear model
+summary(model.linear)
+
+```
+
+5.5 Although this linear model is not intended as, in any way, a final model, we can still use it to make predictions and find it produces an RMSE of
+`r rmse_linear`
+, an improvement on the simplest model.
+
+5.6 We are most interested in variables with large effects and high significance (low p-values). Here visualizing the variables on a scatter plot can help.
+
+5.7 We observe that the variables xxx have a relatively small effect and significance and we exclude these from the modelling.
+
+### Poisson and negative binomial models
+
+5.8 The distributions most often used for modelling count data are the poisson and the negative binomial. We will start by fitting both of these and comparing the results.
+ 
+
+```{r poisson, echo=TRUE, message=FALSE, warning=FALSE}
+
+# fit a poisson glm to predict the number of casualties
+model.poisson <- glm(Number_of_Casualties ~ Police_Force +
+                    Other_Vehicles + 
+                    Speed_limit + 
+                    First_Road_Class +
+                    Second_Road_Class +
+                    First_Road_Class:Second_Road_Class +
+                    Road_Surface_Conditions +
+                    time_of_day + 
+                    Day_of_Week +
+                    rush_hour +
+                    Age_Band_of_Driver + 
+                    Vehicle_Type + 
+                    Age_of_Vehicle +
+                    Driver_IMD_Decile +
+                    year +
+                    month,
+               data=sampled_training,
+               family=poisson(link=log))
+
+# Apply the model to the validation data to test it
+pred.poisson <- data.frame(casualties = 
+                            predict(model.poisson, newdata=sampled_validation))
+
+# Flag any records without a prediction and exclude from RMSE
+miss_idx <- is.na(pred.poisson$casualties)
+
+# Calculate the RMSE for the model
+rmse_poisson <- RMSE(sampled_validation[!miss_idx,]$Number_of_Casualties, pred.poisson[!miss_idx,])
+
+# Store the RMSE value in our results tibble
+rmse_results <- bind_rows(rmse_results,
+                          tibble(method="Poisson model",  
+                                     RMSE = rmse_poisson))
+
+# Output the coefficients of the poisson model
+summary(model.poisson)
+
+```
+
+5.9 This poisson model gives a RMSE of
+`r rmse_poisson`
+, not as good as our previous linear model.
+ 
+
+```{r negbin, echo=TRUE, message=FALSE, warning=FALSE}
+
+# fit a negative binomial glm to predict the number of casualties
+model.negbin <- glm.nb(Number_of_Casualties ~ Police_Force +
+                    Other_Vehicles + 
+                    Speed_limit + 
+                    First_Road_Class +
+                    Second_Road_Class +
+                    First_Road_Class:Second_Road_Class +
+                    Road_Surface_Conditions +
+                    Carriageway_Hazards + 
+                    time_of_day * Day_of_Week +
+                    rush_hour +
+                    Age_Band_of_Driver + 
+                    Vehicle_Type + 
+                    Age_of_Vehicle +
+                    Driver_IMD_Decile +
+                    year +
+                    month,
+                  data=sampled_training)
+
+# Apply the model to the validation data to test it
+pred.negbin <- data.frame(casualties = 
+                            predict(model.negbin, newdata=sampled_validation))
+
+# Flag any records without a prediction and exclude from RMSE
+miss_idx <- is.na(pred.negbin$casualties)
+
+# Calculate the RMSE for the model
+rmse_negbin <- RMSE(sampled_validation[!miss_idx,]$Number_of_Casualties, pred.negbin[!miss_idx,])
+
+# Store the RMSE value in our results tibble
+rmse_results <- bind_rows(rmse_results,
+                          tibble(method="Negative binomial model",  
+                                     RMSE = rmse_negbin))
+
+# Output the coefficients of the negative binomial model
+summary(model.negbin)
+```
+
+5.10 The negative binomial model gives an RMSE of
+`r rmse_negbin`
+about the same as the poisson model. We can test this degree of similarity by using an anova (analysis of variance) test. 
+ 
+
+```{r anova, echo=TRUE, message=FALSE, warning=FALSE}
+
+# ANOVA poisson vs neg bin
+anova(model.poisson, model.negbin)
+
+```
+
+5.11 Comparing the model summaries we see that the two models are not dissimilar, and score similar RMSEs, this is confirmed by the ANOVA test which shows us that the differences between these models are not significant. 
+
+### Response transformation and zero inflation
+
+5.12 Our response data is heavily skewed to the value 1, the number of casualties is always one or more. This is quite inefficient, all of those 1s are uninformative: if there has been an accident there will have been a casualty, so we can look at whether we can improve the model by transforming the response variable to one less than the number of casualties. 
+ 
+
+```{r negbinadj, echo=TRUE, message=FALSE, warning=FALSE}
+# Add an adjusted number of casualties to only count any after the first 
+sampled_training$casualties <- sampled_training$Number_of_Casualties - 1
+
+# fit a negative binomial glm to predict the number of casualties after the first
+model.negbin_adj <- glm.nb(casualties ~ Police_Force +
+                    Other_Vehicles + 
+                    Speed_limit + 
+                    First_Road_Class +
+                    Second_Road_Class +
+                    First_Road_Class:Second_Road_Class +
+                    Road_Surface_Conditions +
+                    Carriageway_Hazards + 
+                    time_of_day * Day_of_Week +
+                    rush_hour +
+                    Age_Band_of_Driver + 
+                    Vehicle_Type + 
+                    Age_of_Vehicle +
+                    Driver_IMD_Decile +
+                    year +
+                    month,
+                  
+                  data=sampled_training)
+
+# Apply the model to the validation data to test it
+pred.negbin_adj <- data.frame(casualties = 
+                            predict(model.negbin_adj, newdata=sampled_validation) + 1)
+
+# Flag any records without a prediction and exclude from RMSE
+miss_idx <- is.na(pred.negbin_adj$casualties)
+
+# Calculate the RMSE for the model
+rmse_negbin_adj <- RMSE(sampled_validation[!miss_idx,]$Number_of_Casualties, pred.negbin_adj[!miss_idx,])
+
+# Store the RMSE value in our results tibble
+rmse_results <- bind_rows(rmse_results,
+                          tibble(method="Neg bin model, response adj",  
+                                     RMSE = rmse_negbin_adj))
+
+```
+
+5.13 This is an improvement, with a higher RMSE score, 
+`r rmse_negbin_adj`
+, but a lower AIC (
+`r model.negbin_adj$aic`
+vs
+`r model.negbin$aic`
+for the negative binomial model). 
+
+5.14 Looking at the response values we now have many more zeroes in our data than we would expect; this motivates consideration of a zero-inflated model. We can use the *pscl* library's *zeroinfl()* function to fit a zero-inflated negative binomial model. This should create a two step model, firstly classifying accidents as having either a zero or positive number of casualties after the first, and secondly a distribution-based model ofthe positive values.
+ 
+
+```{r negbinzin, echo=TRUE, message=FALSE, warning=FALSE}
+
+# fit a zero inflated negative binomial model to predict the number of casualties after the first
+model.negbin_zin <- zeroinfl(casualties ~ Police_Force +
+                 Other_Vehicles + 
+                 Speed_limit + 
+                 First_Road_Class +
+                 Second_Road_Class +
+                 First_Road_Class:Second_Road_Class +
+                 Road_Surface_Conditions +
+                 Carriageway_Hazards + 
+                 time_of_day * Day_of_Week +
+                 rush_hour +
+                 Age_Band_of_Driver + 
+                 Vehicle_Type + 
+                 Age_of_Vehicle +
+                 Driver_IMD_Decile +
+                 year +
+                 month,
+               
+               data=sampled_training,
+               dist = "negbin", EM=FALSE)
+
+# Apply the model to the validation data to test it
+pred.negbin_zin <- data.frame(casualties = 
+                            predict(model.negbin_zin, newdata=sampled_validation) + 1)
+
+# Flag any records without a prediction and exclude from RMSE
+miss_idx <- is.na(pred.negbin_zin$casualties)
+
+# Calculate the RMSE for the model
+rmse_negbin_zin <- RMSE(sampled_validation[!miss_idx,]$Number_of_Casualties, pred.negbin_zin[!miss_idx,])
+
+# Store the RMSE value in our results tibble
+rmse_results <- bind_rows(rmse_results,
+                          tibble(method="Neg bin model, zero-inflated",  
+                                     RMSE = rmse_negbin_zin))
+
+```
+
+5.15 This gives us a RMSE score of 
+`r rmse_negbin_zin`
+and we can test whether this zero inflated model is statistically better than the adjusted response model using the Vuong closeness test.
+ 
+
+```{r zin_vuong, echo=TRUE, message=FALSE, warning=FALSE}
+
+# Test for Vuong closeness
+vuong(model.negbin_adj, model.negbin_zin)
+
+```
+
+The Vuong z-statstic suggests that the zero-inflated model is better.
+
+### Review of count models
+
+5.16 The RMSE scores we've achieved with the count models are poor. The zero-inflated negative binomial model is less good than the linear model we started with. This suggests that, contrary to our intuition, a count model may not be appropriate. This is largely driven by the preponderance of single casualty accidents, predicting that there will be one casualty outperforms these models and achieves an RMSE score of 0.83. 
+
+### Decision trees and random forests
+
+5.17 The performance of the models we have looked at so far motivates a fresh approach. We want to find a way of reflecting the variablility in the number of casualties with the variability of other data items. One way of doing this is with decision trees, however we can go a step further and develop a random forest model.
+
+5.18 Fitting a random forest model can be very resource intensive, so we will try using a subset of our training data, taking a tenth of the data should give us enough to start with.
+ 
+ 
+``` {r rf_sample, echo= TRUE, message=FALSE, warning=FALSE}
+
+# Set the seed to get reproducible randomness
+set.seed(1, sample.kind="Rounding")
+
+# Create sampled partition index to get a subset
+subsample_index <- createDataPartition(y = sampled_training$Number_of_Casualties, 
+                                     times = 1, p = 0.1, list = FALSE)
+# Create the subset as those obs in the index
+subsample_training <- sampled_training[subsample_index,]
+
+```
+
+5.19 We can now fit a random forest model to this subset.
+
+``` {r randomforest, echo= TRUE, message=FALSE, warning=FALSE}
+
+# Set the seed to get reproducible randomness
+set.seed(1, sample.kind="Rounding")
+# fit a random forest model to predict the number of casualties
+fit <- randomForest(Number_of_Casualties~Police_Force +
+                      Other_Vehicles + 
+                      Speed_limit + 
+                      First_Road_Class +
+                      Second_Road_Class +
+                      Weather_Conditions + 
+                      Light_Conditions + 
+                      Road_Surface_Conditions +
+                      Carriageway_Hazards + 
+                      Urban_or_Rural_Area + 
+                      time_of_day + 
+                      Day_of_Week +
+                      rush_hour +
+                      Age_Band_of_Driver + 
+                      Sex_of_Driver +
+                      Vehicle_Type + 
+                      Age_of_Vehicle +
+                      Driver_IMD_Decile +
+                      year +
+                      month, 
+                    data = subsample_training, 
+                    na.action = na.omit) 
+
+# Apply the model to the validation data to test it
+pred.rf <- data.frame(casualties = predict(fit, sampled_validation))
+
+# Flag any records without a prediction and exclude from RMSE
+miss_idx <- is.na(pred.rf$casualties)
+
+# Calculate the RMSE for the model
+rmse_rf <- RMSE(sampled_validation[!miss_idx,]$Number_of_Casualties, pred.rf[!miss_idx,])
+
+# Store the RMSE value in our results tibble
+rmse_results <- bind_rows(rmse_results,
+                          tibble(method="Random Forest",  
+                                     RMSE = rmse_rf))
+
+```
+
+5.20 This random forest model gives an RMSE score of 
+`r rmse_rf`
+, significantly better than the count-based (poisson and negative binomial) models we saw earlier.
+
+### Model tuning
+
+5.21 We can get some diagnostic statstics from this model by using the varImp function.
+
+``` {r rf_importance, echo= TRUE, message=FALSE, warning=FALSE}
+# List variable importance scores from the random forest model
+varImp(fit)
+
+```
+
+5.22 This suggests that we can simplify the model without losing a huge amount of predictive power. With a simpler model we can process a larger volume of data and improve the model as we will train it on a more diverse range of examples. We can also tune the model, investigating the numbers of trees to use, the size of nodes and the number of variables available for splitting at each tree node. With these refinements we should be able to improve our RMSE score and do better than the linear model.
+
+### Simple ensemble
+
+5.23 We have seen that the variables that were important in our linear model were different to those highlighted in our random forest model. This would allow us to use a simple ensemble, a combination of these two models. 
+
+``` {r rf_ensemble, echo= TRUE, message=FALSE, warning=FALSE}
+
+# Apply the model to the validation data to test it
+pred.rf_lin <- ifelse(is.na(pred.rf$casualties + pred.linear$casualties), 
+                 mean_casualties, 
+                 (pred.rf$casualties + pred.linear$casualties) / 2)
+
+# Calculate the RMSE for the model
+rmse_rf_lin <- RMSE(sampled_validation$Number_of_Casualties, pred.rf_lin)
+
+# Store the RMSE value in our results tibble
+rmse_results <- bind_rows(rmse_results,
+                          tibble(method="Random Forest and linear",  
+                                 RMSE = rmse_rf_lin))
+
+```
+
+5.24 This ensemble model results in an RMSE of 
+`r rmse_rf_lin`
+an improvement on both the random forest and linear models we have seen so far.
+
+\newpage
+***
+## 6 Results
+
+6.1 We have seen that we can improve the accuracy reported by our modelling by developing our choice of variables and distribution. The rmse scores for the models we have developed are summarized in the table below:
+
+``` {r results_table, echo=TRUE, message=FALSE, warning=FALSE}
+
+as.data.frame(rmse_results)
+
+```
+
+6.2 The achieved model performance is a little disappointing, and suggests that, with hindsight, the lack of variation in the response variable means it is less than ideal for modelling. However there is clearly scope to improve the accuracy of the random forest model and to therby improve the ensemble.
+ 
+6.3 The random forest model is highly resource intensive and limited the amount of data that could be processed using the hardware available. This suggests that a better model could be achieved with more data and with tuning of the model parameters.
+
+\newpage
+***
+## 7 Conclusions
+
+### Summary
+
+7.1 We have looked in some depth at the accident data and this exploratory data analysis has allowed us to see some ways to extend and improve the casualty model. The final model we present here is an ensemble of a linear and a random forest model. The ensemble model outperforms both of its constituent models, suggesting that these very different models are complementary. 
+
+7.2 This also work suggests that the variables identified using a linear model may not be the only ones relevant in predicting the number of casualties in a traffic accident, and that a tree-based model may be insightful, for example highlighting the significance of car maintenance through the proxies of IMD decile (wealth) and car age. 
+
+### Limitations and further work
+
+#### Conditionality of the data
+ 
+7.3 The models discussed here are all conditional models, derived from data collected once accidents have happened. These models don't help predict when or where an accident is likely to happen. Once an accident has happened, the first human instinct is to react to help and support the casualties and counting them, identifying them, is an intrinsic first step on arriving and assessing the scene.  
+
+7.4 On its own this model is therefore of limited use, although the random forest gives us insight into parameters we might not have looked into from the linear model. The model developed here could be useful as part of a suite of models designed to predict accidents. The first step in this scheme might be a parallel model to predict accident severity, this would be a natural companion and could be developed in the same conditional manner. 
+
+#### An integrated suite of models
+ 
+7.5 A separate model, or module, in this system would then predict where and when accidents were likely to happen. This would make the predictions of this model more useful because an accident propensity model would take it out of the conditional world of "once an accident has happened". This model could rely on other external data: driver numbers and congestion, weather forecasts, roadworks and other factors could be fed in to it. Such a model could allow emergency services to prioritize between accidents, and plan crew rosters based on the likelihood of an accident in a given place at a given time for some weather condtions. 
+
+7.6 In the previous section we alluded to the use of a wider range of input data sources, there is, however, data associated with the accident records that we have not looked at, such as the casualty records and details of other vehicles. For example by only looking at the first vehicle, say a motorbike, we might miss the exposure of a larger number of people, say on a coach, to danger. We could also engineer model features such as the number of vehicles involved as this ought to contribute to the number of accidents.
+
+#### Optimising the random forest
+ 
+7.7 The random forest model is not in its final form, with lots of variables and limited data, due to limited processing power. The results of this modelling could, however, be used to restrict the number of variables and increase the number of rows of data within a processing envelope. With more computing power this parsimony might not be necessary. 
+
+7.8 The random forest model should be tuned and optimised using a multi-fold design to ensure robust optimisation. As we identified in 5.21 there is ample scope for this, with parameters such as the numbers of trees, and the size and composition of nodes all configurable.
+
+#### Weighting the ensemble
+ 
+7.9 The ensemble chosen here is a simple average of the two models, we could optimize the weighting of these models in the ensemble. As a first step we might do this by using a ten-fold design again, and looking at how the accuracy changes if our weighting is 10% linear prediction, 90% random forest, through to 90% linear, 10% random forest, testing on the reserved fold each time.
+
+#### Literature review
+ 
+7.10 We have relied on the data contained here to inform our modelling decisions, however we might also review the associated literature and talk to experts in the field. A quick scan of some of the academic output on this subject suggests that some of the drivers of accident severity are dangerous driving, whether under the influence of stimulants, such as alcohol, or breaking speed limits. These are variables that we do not have access to, at the current time, but which could lead to a much more predictive model. 
+
+***
